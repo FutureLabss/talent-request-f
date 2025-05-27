@@ -1,22 +1,11 @@
-// import Image from "next/image";
-// import { Geist, Geist_Mono } from "next/font/google";
-
-// const geistSans = Geist({
-//   variable: "--font-geist-sans",
-//   subsets: ["latin"],
-// });
-
-// const geistMono = Geist_Mono({
-//   variable: "--font-geist-mono",
-//   subsets: ["latin"],
-// });
-
-import Nav from "@/components/Nav";
+// pages/index.tsx
 import { useEffect, useState } from "react";
+import { useRouter } from "next/router"; // We need useRouter for redirection
+import Nav from "@/components/Nav";
 import {
   FiRefreshCw,
   FiSearch,
-  FiTrash2,
+  // FiTrash2,
   FiEye,
   FiChevronLeft,
   FiChevronRight,
@@ -34,9 +23,20 @@ interface TalentRequest {
   createdAt: string;
 }
 
+interface User {
+  id: string;
+  email: string;
+  role: string;
+}
+
 export default function Home() {
+  const router = useRouter();
+  const [token, setToken] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true); // New state to manage authentication check loading
+
   const [requests, setRequests] = useState<TalentRequest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(true); // Renamed from 'loading' to avoid conflict
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedRequest, setSelectedRequest] = useState<TalentRequest | null>(
     null
@@ -45,27 +45,118 @@ export default function Home() {
 
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(10); // Number of items per page
+  const [itemsPerPage] = useState(10);
+
+  // Helper to safely decode token (copied from AuthContext)
+  const decodeToken = (jwtToken: string) => {
+    if (typeof window === "undefined") {
+      return null;
+    }
+    try {
+      if (!jwtToken) {
+        return null;
+      }
+      const parts = jwtToken.split(".");
+      if (parts.length !== 3) {
+        return null;
+      }
+      const decoded = JSON.parse(atob(parts[1]));
+      return decoded;
+    } catch (e) {
+      console.error("Error decoding JWT token:", e, "Token:", jwtToken);
+      return null;
+    }
+  };
+
+  // --- Authentication and Redirection Logic ---
+  useEffect(() => {
+    setAuthLoading(true); // Start authentication check
+    if (typeof window !== "undefined") {
+      // Ensure localStorage is accessed only in browser
+      const storedToken = localStorage.getItem("token");
+      if (storedToken) {
+        const decodedUser = decodeToken(storedToken);
+        if (decodedUser && decodedUser.role === "admin") {
+          // Check for admin role
+          setToken(storedToken);
+          setUser({
+            id: decodedUser.id,
+            email: decodedUser.email,
+            role: decodedUser.role,
+          });
+          setAuthLoading(false); // Auth check complete
+          return; // User is authenticated and authorized, proceed
+        } else {
+          // Token exists but is invalid, or user is not admin
+          console.warn(
+            "Invalid token or non-admin user. Clearing and redirecting."
+          );
+          localStorage.removeItem("token");
+          localStorage.removeItem("user");
+        }
+      }
+    }
+    // If no token, or invalid token, or not admin, redirect to login
+    setAuthLoading(false); // Auth check complete
+    router.push("/login");
+  }, [router]); // Depend on router to ensure it's available
+
+  // Logout function
+  const logout = () => {
+    setToken(null);
+    setUser(null);
+    if (typeof window !== "undefined") {
+      // Ensure localStorage is accessed only in browser
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+    }
+    router.push("/login"); // Redirect to login page
+  };
 
   // Fetch data from your backend API
   const fetchRequests = async () => {
+    if (!token || authLoading) {
+      // Don't fetch if token is missing or still checking auth
+      setDataLoading(false);
+      return;
+    }
+
     try {
-      setLoading(true);
+      setDataLoading(true);
       const response = await fetch(
-        "https://talent-backend-o5cb.onrender.com/api/talents"
+        "https://talent-backend-o5cb.onrender.com/api/talents",
+        {
+          headers: {
+            Authorization: `Bearer ${token}`, // Send the JWT token
+          },
+        }
       );
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          console.error(
+            "Unauthorized or Forbidden access to requests. Logging out."
+          );
+          logout(); // Log out if token is invalid or unauthorized
+        }
+        throw new Error(`HTTP error! Status: ${response.status}`);
+      }
+
       const data = await response.json();
       setRequests(data);
     } catch (error) {
       console.error("Error fetching requests:", error);
     } finally {
-      setLoading(false);
+      setDataLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchRequests();
-  }, []);
+    // Only fetch data if auth check is complete and user is authenticated
+    if (!authLoading && token) {
+      fetchRequests();
+    }
+  }, [token, authLoading]); // Depend on token and authLoading
 
   // Filter requests based on search term
   const filteredRequests = requests.filter(
@@ -88,27 +179,44 @@ export default function Home() {
   // Change page
   const paginate = (pageNumber: number) => setCurrentPage(pageNumber);
 
-  // Delete a request
-  const deleteRequest = async (id: string) => {
-    if (window.confirm("Are you sure you want to delete this request?")) {
-      try {
-        await fetch(
-          `https://talent-backend-o5cb.onrender.com/api/talents/${id}`,
-          {
-            method: "DELETE",
-          }
-        );
-        setRequests(requests.filter((request) => request._id !== id));
+  // Delete a request - NOW REQUIRES AUTHENTICATION!
+  // const deleteRequest = async (id: string) => {
+  //   if (!token) {
+  //     alert("You are not authenticated to perform this action.");
+  //     return;
+  //   }
+  //   if (window.confirm("Are you sure you want to delete this request?")) {
+  //     try {
+  //       const response = await fetch(
+  //         `http://localhost:5000/api/talents/${id}`,
+  //         {
+  //           method: "DELETE",
+  //           headers: {
+  //             Authorization: `Bearer ${token}`, // Send the JWT token
+  //           },
+  //         }
+  //       );
 
-        // Reset to first page if current page would be empty after deletion
-        if (currentItems.length === 1 && currentPage > 1) {
-          setCurrentPage(currentPage - 1);
-        }
-      } catch (error) {
-        console.error("Error deleting request:", error);
-      }
-    }
-  };
+  //       if (!response.ok) {
+  //         if (response.status === 401 || response.status === 403) {
+  //           alert("You are not authorized to delete this request.");
+  //           logout(); // Log out if unauthorized
+  //         }
+  //         throw new Error(`HTTP error! Status: ${response.status}`);
+  //       }
+
+  //       setRequests(requests.filter((request) => request._id !== id));
+
+  //       // Reset to first page if current page would be empty after deletion
+  //       if (currentItems.length === 1 && currentPage > 1) {
+  //         setCurrentPage(currentPage - 1);
+  //       }
+  //     } catch (error) {
+  //       console.error("Error deleting request:", error);
+  //       alert("Failed to delete request. Check console for details.");
+  //     }
+  //   }
+  // };
 
   // Format date
   const formatDate = (dateString: string) => {
@@ -120,6 +228,23 @@ export default function Home() {
       minute: "2-digit",
     });
   };
+
+  // Display a loading spinner or message while authentication is being checked
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-b-4 border-blue-600"></div>
+        <p className="ml-4 text-gray-600">Checking authentication...</p>
+      </div>
+    );
+  }
+
+  // If auth check is complete and no user (meaning redirected), this won't even be reached
+  // but it's good practice to ensure content only renders if user is available.
+  if (!user) {
+    return null; // Or a fallback component, though redirection should handle this
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto">
@@ -127,6 +252,13 @@ export default function Home() {
       </div>
       <div className="max-w-7xl mx-auto mt-10">
         <h1 className="text-2xl font-bold text-gray-800">Admin Dashboard</h1>
+        {user && ( // Display user info if available
+          <p className="text-gray-600 mt-2">
+            Welcome back, <span className="font-semibold">{user.email}</span>!
+            Your role:{" "}
+            <span className="font-semibold text-blue-600">{user.role}</span>
+          </p>
+        )}
         <p className="text-gray-600 mt-2">
           Manage talent requests and submissions.
         </p>
@@ -136,12 +268,18 @@ export default function Home() {
           <div className="flex space-x-4">
             <button
               onClick={fetchRequests}
-              className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              className="flex items-center cursor-pointer px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
             >
               <FiRefreshCw
-                className={`mr-2 ${loading ? "animate-spin" : ""}`}
+                className={`mr-2 ${dataLoading ? "animate-spin" : ""}`} // Use dataLoading here
               />
               Refresh
+            </button>
+            <button
+              onClick={logout} // Add logout button
+              className="flex items-center cursor-pointer px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+            >
+              Logout
             </button>
           </div>
         </div>
@@ -154,7 +292,7 @@ export default function Home() {
               <input
                 type="text"
                 placeholder="Search requests..."
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                className="w-full pl-10 pr-4 py-2 border text-black border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                 value={searchTerm}
                 onChange={(e) => {
                   setSearchTerm(e.target.value);
@@ -167,7 +305,7 @@ export default function Home() {
 
         {/* Requests Table */}
         <div className="bg-white rounded-lg shadow overflow-hidden">
-          {loading ? (
+          {dataLoading ? ( // Use dataLoading here
             <div className="p-8 text-center">
               <div className="animate-pulse flex justify-center">
                 <div className="h-8 w-8 bg-blue-600 rounded-full"></div>
@@ -236,12 +374,12 @@ export default function Home() {
                           >
                             <FiEye className="inline mr-1 " /> View
                           </button>
-                          <button
+                          {/* <button
                             onClick={() => deleteRequest(request._id)}
                             className="text-red-600 hover:text-red-900"
                           >
                             <FiTrash2 className="inline mr-1" /> Delete
-                          </button>
+                          </button> */}
                         </td>
                       </tr>
                     ))}
@@ -332,37 +470,37 @@ export default function Home() {
             <h2 className="text-xl font-bold mb-4 text-gray-800">
               Request Details
             </h2>
-            <div className="mb-2">
-              <span className="font-semibold">Name:</span>{" "}
+            <div className="mb-2 text-gray-800">
+              <span className="font-semibold ">Name:</span>{" "}
               {selectedRequest.firstName} {selectedRequest.lastName}
             </div>
-            <div className="mb-2">
-              <span className="font-semibold">Email:</span>{" "}
+            <div className="mb-2 text-gray-800">
+              <span className="font-semibold ">Email:</span>{" "}
               {selectedRequest.companyEmail}
             </div>
-            <div className="mb-2">
+            <div className="mb-2 text-gray-800">
               <span className="font-semibold">Company Website:</span>{" "}
               {selectedRequest.companyWebsite}
             </div>
-            <div className="mb-2">
+            <div className="mb-2 text-gray-800">
               <span className="font-semibold">Profession Needed:</span>{" "}
               {selectedRequest.professionNeeded}
             </div>
-            <div className="mb-2">
+            <div className="mb-2 text-gray-800">
               <span className="font-semibold">Quantity Needed:</span>{" "}
               {selectedRequest.quantityNeeded}
             </div>
-            <div className="mb-2">
+            <div className="mb-2 text-gray-800">
               <span className="font-semibold">Contact Address:</span>{" "}
               {selectedRequest.contactAddress}
             </div>
-            <div className="mb-2">
+            <div className="mb-2 text-gray-800">
               <span className="font-semibold">Date:</span>{" "}
               {formatDate(selectedRequest.createdAt)}
             </div>
             <div className="flex justify-end mt-6">
               <button
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                className="px-4 py-2 bg-blue-600 cursor-pointer text-white rounded-lg hover:bg-blue-700 transition-colors"
                 onClick={() => setIsModalOpen(false)}
               >
                 Close
